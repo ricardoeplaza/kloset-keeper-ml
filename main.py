@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, Response
+from fastapi import FastAPI, UploadFile, File, Form, Response
 from rembg import remove, new_session
 from sentence_transformers import SentenceTransformer
 from PIL import Image
@@ -42,20 +42,38 @@ async def remove_background(file: UploadFile = File(...)):
     return Response(content=buf.getvalue(), media_type="image/png")
 
 @app.post("/generate-embedding")
-async def generate_embedding(file: UploadFile = File(...)):
-    """
-    Receives a 300px WebP thumbnail and returns a 512-dimension vector
-    """
+async def generate_embedding(file: UploadFile = File(...), description: str = Form(None)):
+    # 1. Process Image Embedding
     input_data = await file.read()
-    
-    # Open WebP and ensure RGB conversion for CLIP compatibility
     image = Image.open(io.BytesIO(input_data)).convert("RGB")
+    img_embedding = embed_model.encode(image)
     
-    # Generate 512-dimension embedding vector
-    embedding = embed_model.encode(image)
+    # 2. Process Text Embedding (if text exists)
+    final_embedding = img_embedding
     
+    text_content = description
+    
+    if text_content:
+        # Generate text embedding using the same CLIP model
+        text_embedding = embed_model.encode(text_content)
+        
+        # Multimodal Fusion:
+        # We normalize both to give them equal theoretical "weight"
+        # and then average/sum them.
+        import numpy as np
+        
+        # Simple Weighted Average (70% image, 30% text as an example)
+        # You can adjust these weights based on your preference
+        w_img, w_txt = 0.7, 0.3
+        
+        combined = (img_embedding * w_img) + (text_embedding * w_txt)
+        
+        # Re-normalize the result so the vector length is 1 again
+        final_embedding = combined / np.linalg.norm(combined)
+
     return {
-        "embedding": embedding.tolist(),
+        "embedding": final_embedding.tolist(),
         "dimensions": 512,
-        "model": "clip-ViT-B-32"
+        "model": "clip-ViT-B-32",
+        "refined_by_text": bool(text_content)
     }
