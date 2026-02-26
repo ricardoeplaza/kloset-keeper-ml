@@ -1,0 +1,8 @@
+fastapi>=0.133.1
+uvicorn[standard]>=0.41.0
+rembg[cpu]>=2.0.72
+sentence-transformers>=5.2.3
+Pillow>=12.1.1
+python-multipart>=0.0.22
+numpy>=2.4.2
+openvino>=2026.0.0

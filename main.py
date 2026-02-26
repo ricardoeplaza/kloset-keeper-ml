@@ -5,14 +5,29 @@ from PIL import Image
 import io
 import numpy as np
 
-app = FastAPI(title="Garment AI Processor")
+app = FastAPI(title="Kloset Keeper AI Processor")
 
 # Optimized session for CPU (u2netp is lightweight and fast for Debian environments)
 bg_session = new_session("u2netp")
 
 # CLIP Model: Industry standard for visual embeddings
-# Note: Internally resizes to 224x224
-embed_model = SentenceTransformer('clip-ViT-B-32', device='cpu')
+# OpenVINO backend for efficient CPU inference
+embed_model = SentenceTransformer('clip-ViT-B-32', backend='openvino')
+
+@app.get("/")
+async def root():
+    """Welcome and health check endpoint"""
+    
+    return {
+        "message": "Kloset Keeper AI Processor",
+        "status": "operational",
+        "version": "0.9.0",
+        "available_endpoints": [
+            "/remove-background",
+            "/embeddings/text",
+            "/embeddings/image"
+        ]
+    }
 
 @app.post("/remove-background")
 async def remove_background(file: UploadFile = File(...)):
@@ -26,45 +41,35 @@ async def remove_background(file: UploadFile = File(...)):
     output_png = remove(
         input_data, 
         session=bg_session, 
-        alpha_matting=True,
-        alpha_matting_foreground_threshold=240,
-        alpha_matting_background_threshold=15,
-        alpha_matting_erode_size=10 # Small erosion helps with dark halos
+        alpha_matting=False,
+        # alpha_matting=True,
+        # alpha_matting_foreground_threshold=240,
+        # alpha_matting_background_threshold=15,
+        # alpha_matting_erode_size=10 # Small erosion helps with dark halos
     )
     
-    # 2. Open image with Pillow for post-processing
+    # 2. Open image and process alpha channel
     img = Image.open(io.BytesIO(output_png))
-
-    # 3. Clean alpha channel (Remove faint shadows/ghost pixels)
-    # This ensures getbbox() doesn't include unwanted residues
+    img = img.convert("RGBA")
     r, g, b, a = img.split()
     # Threshold: any pixel with alpha < 30 becomes 0 (fully transparent)
+    # Helps cleaning 'ghost' pixels for a better bounding box
     a = a.point(lambda p: p if p > 30 else 0)
     img.putalpha(a)
 
-    # # 4. Brightness & Contrast Enhancement
-    # # Increase brightness slightly (1.1 = +10%) and contrast (1.1 = +10%)
-    # # This compensates for the dimming effect in the edges
-    # enhancer_bright = ImageEnhance.Brightness(img)
-    # img = enhancer_bright.enhance(1.05) 
-    
-    # enhancer_cont = ImageEnhance.Contrast(img)
-    # img = enhancer_cont.enhance(1.1)
-
-    # 5. TRIM (Auto-crop) logic
-    # Now bbox will be much more accurate after cleaning the alpha channel
+    # 3. TRIM (Auto-crop) logic
     bbox = img.getbbox() 
     if bbox:
         img = img.crop(bbox)
     
-    # 6. Convert back to bytes for the response
+    # 4. Convert back to bytes
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return Response(content=buf.getvalue(), media_type="image/png")
 
 @app.post("/embeddings/text")
 async def get_text_embedding(text: str = Form(...)):
-    """Generates an embedding for a single text string (Categories, Search)."""
+    """Generates a normalized embedding for a text string."""
     embedding = embed_model.encode(text)
     return {
         "embedding": normalize_vector(embedding).tolist(),
@@ -75,24 +80,20 @@ async def get_text_embedding(text: str = Form(...)):
 @app.post("/embeddings/image")
 async def get_multimodal_embedding(file: UploadFile = File(...), description: str = Form(None)):
     """
-    Generates a multimodal embedding. If description is provided, it fuses image and text.
+    Generates a multimodal embedding.
     """
-    # 1. Process Image Embedding
     input_data = await file.read()
-    image = Image.open(io.BytesIO(input_data)).convert("RGB")
-    img_embedding = embed_model.encode(image)
+    image_rgb = Image.open(io.BytesIO(input_data)).convert("RGB")
+    img_embedding = embed_model.encode(image_rgb)
     
     final_embedding = img_embedding
 
-    # 2. Optional Process Text Embedding
     if description:
         # Generate text embedding using the same CLIP model
         text_embedding = embed_model.encode(description)
-        
         # Simple Weighted Average (70% image, 30% text as an example)
         # You can adjust these weights based on your preference
         w_img, w_txt = 0.7, 0.3
-        
         final_embedding = (img_embedding * w_img) + (text_embedding * w_txt)
 
     return {
